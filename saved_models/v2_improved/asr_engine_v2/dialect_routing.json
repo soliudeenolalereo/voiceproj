@@ -1,0 +1,14 @@
+{
+  "engine_architecture": "Dialect-Aware Hybrid (Whisper + Meta MMS)",
+  "routes": {
+    "en": "Whisper V2 (temperature=0.0, no_repeat_ngram_size=3)",
+    "en_ng": "Whisper V2 (Nigerian English phone-level decoding)",
+    "pcm": "Whisper V2 (English base with Pidgin lexical mapping)",
+    "fa": "Whisper V2 (Persian script decoder)",
+    "ha": "Whisper V2 (Hausa token mapping)",
+    "sw": "Whisper V2 (Swahili token mapping)",
+    "yo": "Whisper V2 / Meta MMS yor",
+    "ig": "Meta MMS ibo / Whisper phonetic alignment",
+    "zu": "Meta MMS zul / Whisper anti-repetition penalty (1.35)"
+  }
+}

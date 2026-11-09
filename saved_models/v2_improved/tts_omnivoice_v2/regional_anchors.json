@@ -1,0 +1,43 @@
+{
+  "en_ng": {
+    "anchor_file": "data/reference_anchors/ref_en_ng.wav",
+    "dialect": "Nigerian English",
+    "status": "active"
+  },
+  "pcm": {
+    "anchor_file": "data/reference_anchors/ref_pcm.wav",
+    "dialect": "Nigerian Pidgin",
+    "status": "active"
+  },
+  "sw": {
+    "anchor_file": "data/reference_anchors/ref_sw.wav",
+    "dialect": "Swahili",
+    "status": "active"
+  },
+  "yo": {
+    "anchor_file": "data/audio_clean/yo_000000.wav",
+    "dialect": "Yoruba",
+    "status": "active"
+  },
+  "ig": {
+    "anchor_file": "data/audio_clean/ig_000000.wav",
+    "dialect": "Igbo",
+    "status": "active"
+  },
+  "ha": {
+    "anchor_file": "data/audio_clean/ha_000000.wav",
+    "dialect": "Hausa",
+    "status": "active"
+  },
+  "zu": {
+    "anchor_file": "data/audio_clean/zu_000000.wav",
+    "dialect": "isiZulu",
+    "status": "active"
+  },
+  "fa": {
+    "anchor_file": null,
+    "dialect": "Persian",
+    "mode": "voice_design",
+    "status": "active"
+  }
+}
