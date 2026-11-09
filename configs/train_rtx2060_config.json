@@ -1,0 +1,21 @@
+{
+    "llm_name_or_path": "models/k2-fsa-OmniVoice",
+    "audio_vocab_size": 1025,
+    "audio_mask_id": 1024,
+    "num_audio_codebook": 8,
+    "audio_codebook_weights": [8, 8, 6, 6, 4, 4, 2, 2],
+    "init_from_checkpoint": "models/k2-fsa-OmniVoice",
+
+    "learning_rate": 3e-5,
+    "steps": 100,
+    "batch_tokens": 512,
+    "gradient_accumulation_steps": 4,
+    "num_workers": 0,
+    "mixed_precision": "no",
+    "max_grad_norm": 1.0,
+    "warmup_ratio": 0.05,
+    "logging_steps": 10,
+    "save_steps": 50,
+    "keep_last_n_checkpoints": 3,
+    "attn_implementation": "sdpa"
+}

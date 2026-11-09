@@ -1,0 +1,9 @@
+{
+    "train": [
+        {
+            "manifest_path": [
+                "C:\\Users\\DELL\\Downloads\\voiceproj\\data\\tokens\\train\\data.lst"
+            ]
+        }
+    ]
+}

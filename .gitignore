@@ -1,0 +1,42 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments & IDE caches
+.ipynb_checkpoints/
+.pytest_cache/
+.coverage
+env/
+venv/
+ENV/
+.env
+.vscode/
+.idea/
+
+# Large Model Weights, Training States & Checkpoints (>100MB exceeds GitHub limit)
+# Note: Use download_omnivoice_weights.py or save_models.py to download/extract weights locally
+models/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.pkl
+*.onnx
+*.tfevents.*
+tensorboard/
+
+# Retain configs, tokenizers and cards in saved_models while ignoring binary weights
+saved_models/**/*.safetensors
+saved_models/**/*.bin
+
+# Raw training audio cache (re-creatable via dataset_scraper_and_loader.py)
+data/audio_clean/
+
+# OS metadata
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
