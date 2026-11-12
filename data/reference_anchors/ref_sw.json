@@ -1,5 +1,7 @@
 {
+  "language": "sw",
   "audio_path": "C:\\Users\\DELL\\Downloads\\voiceproj\\data\\reference_anchors\\ref_sw.wav",
-  "text": "Hujambo, mimi ni MTN Zigi. Naweza kukusaidia kuhusu vifurushi.",
-  "lang": "sw"
+  "text": "Moja ya tano ya jumla ya ishirini, thelathini na arobaini ni kumi na nane.",
+  "duration": 9.995,
+  "description": "Authentic East African Swahili voice anchor"
 }

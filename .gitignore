@@ -33,6 +33,8 @@ saved_models/**/*.bin
 
 # Raw training audio cache (re-creatable via dataset_scraper_and_loader.py)
 data/audio_clean/
+outputs/api_generated/*.wav
+!outputs/api_generated/.gitkeep
 
 # OS metadata
 Thumbs.db

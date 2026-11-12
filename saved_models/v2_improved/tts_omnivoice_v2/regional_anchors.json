@@ -1,43 +1,17 @@
 {
   "en_ng": {
-    "anchor_file": "data/reference_anchors/ref_en_ng.wav",
+    "anchor_file": "data/audio_clean/en_ng_000002.wav",
+    "verbatim_text": "The Brunei gallery hosts a programme of changing contemporary and historical exhibitions from Asia Africa and the Middle East",
     "dialect": "Nigerian English",
+    "pitch_hz": 119.1,
     "status": "active"
   },
-  "pcm": {
-    "anchor_file": "data/reference_anchors/ref_pcm.wav",
-    "dialect": "Nigerian Pidgin",
-    "status": "active"
-  },
-  "sw": {
-    "anchor_file": "data/reference_anchors/ref_sw.wav",
-    "dialect": "Swahili",
-    "status": "active"
-  },
-  "yo": {
-    "anchor_file": "data/audio_clean/yo_000000.wav",
-    "dialect": "Yoruba",
-    "status": "active"
-  },
-  "ig": {
-    "anchor_file": "data/audio_clean/ig_000000.wav",
-    "dialect": "Igbo",
-    "status": "active"
-  },
-  "ha": {
-    "anchor_file": "data/audio_clean/ha_000000.wav",
-    "dialect": "Hausa",
-    "status": "active"
-  },
-  "zu": {
-    "anchor_file": "data/audio_clean/zu_000000.wav",
-    "dialect": "isiZulu",
-    "status": "active"
-  },
-  "fa": {
-    "anchor_file": null,
-    "dialect": "Persian",
-    "mode": "voice_design",
+  "multilingual_suite": {
+    "anchor_file": "data/audio_clean/xh_000023.wav",
+    "verbatim_text": "isantya se-802.11n sikhawuleze kakhulu kunesabangaphambili abaphumeleleyo be-600mbit s",
+    "dialect": "Unified MTN Zigi Baritone Persona",
+    "pitch_hz": 127.3,
+    "flatness": 0.0037,
     "status": "active"
   }
 }

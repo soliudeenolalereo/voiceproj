@@ -1,5 +1,7 @@
 {
+  "language": "en_ng",
   "audio_path": "C:\\Users\\DELL\\Downloads\\voiceproj\\data\\reference_anchors\\ref_en_ng.wav",
   "text": "Closing the Google assistant app prevents it from working with your headphones.",
-  "lang": "en_ng"
+  "duration": 4.585,
+  "description": "Authentic Nigerian English accent anchor"
 }

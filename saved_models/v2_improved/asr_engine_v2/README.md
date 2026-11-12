@@ -1,9 +1,9 @@
-# Multilingual ASR Engine (Version 2 - Dialect-Aware)
+# Dialect-Aware ASR Model (Version 2 - Improved)
 
 ## Key Enhancements over V1:
-1. **Dialect-Aware Routing**: Routes English, Nigerian English, Nigerian Pidgin, Persian, Swahili, Hausa, and Yoruba through optimized token tables.
+1. **Dialect-Aware Routing**: Direct Whisper language forcing for `en_ng`, `fa`, `sw`, `ha`, `yo`.
 2. **Anti-Hallucination & Anti-Repetition Guards**:
-   - `repetition_penalty: 1.35` (cures Whisper's infinite repetition loops)
-   - `no_repeat_ngram_size: 3` (stops stuttering)
-   - `temperature: 0.0` (eliminates random token hallucinations)
-3. **MMS Dual Engine Fallback**: Integrates Meta MMS acoustic adapters for low-resource African languages (Igbo `ibo`, isiZulu `zul`, Akan `aka`, Luganda `lug`).
+   - `temperature = 0.0`
+   - `no_repeat_ngram_size = 4`
+   - `repetition_penalty = 1.20`
+3. **Meta MMS Support**: Acoustic CTC adapters for low-resource African languages missing from Whisper.

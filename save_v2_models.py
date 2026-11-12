@@ -1,6 +1,10 @@
 """
 Save and Package V2 Models without Discarding V1 Baseline
 =========================================================
+Saves V2 Master Studio models with:
+- Unified Brand Persona Anchor Routing (Authentic Nigerian English + Broadcast Studio Baritone)
+- Broadcast Studio DSP Mastering Pipeline
+- Decoupled Natural Acoustic Parameters
 """
 
 import os
@@ -37,7 +41,7 @@ def package_v1():
 
 
 def package_v2():
-    print("\n2. Packaging V2 Improved Models...")
+    print("\n2. Packaging V2 Master Studio Models...")
 
     # A. TTS V2
     for item in ["config.json", "tokenizer.json", "tokenizer_config.json", "chat_template.jinja", "train_config.json"]:
@@ -57,31 +61,46 @@ def package_v2():
             shutil.copy2(tts_weight_src, tts_weight_dst)
             print("  Copied TTS model.safetensors (2.45 GB)")
 
-    # Regional anchors manifest
+    # Regional anchors manifest with verified verbatim transcripts
     anchors_info = {
-        "en_ng": {"anchor_file": "data/reference_anchors/ref_en_ng.wav", "dialect": "Nigerian English", "status": "active"},
-        "pcm": {"anchor_file": "data/reference_anchors/ref_pcm.wav", "dialect": "Nigerian Pidgin", "status": "active"},
-        "sw": {"anchor_file": "data/reference_anchors/ref_sw.wav", "dialect": "Swahili", "status": "active"},
-        "yo": {"anchor_file": "data/audio_clean/yo_000000.wav", "dialect": "Yoruba", "status": "active"},
-        "ig": {"anchor_file": "data/audio_clean/ig_000000.wav", "dialect": "Igbo", "status": "active"},
-        "ha": {"anchor_file": "data/audio_clean/ha_000000.wav", "dialect": "Hausa", "status": "active"},
-        "zu": {"anchor_file": "data/audio_clean/zu_000000.wav", "dialect": "isiZulu", "status": "active"},
-        "fa": {"anchor_file": None, "dialect": "Persian", "mode": "voice_design", "status": "active"}
+        "en_ng": {
+            "anchor_file": "data/audio_clean/en_ng_000002.wav",
+            "verbatim_text": "The Brunei gallery hosts a programme of changing contemporary and historical exhibitions from Asia Africa and the Middle East",
+            "dialect": "Nigerian English",
+            "pitch_hz": 119.1,
+            "status": "active"
+        },
+        "multilingual_suite": {
+            "anchor_file": "data/audio_clean/xh_000023.wav",
+            "verbatim_text": "isantya se-802.11n sikhawuleze kakhulu kunesabangaphambili abaphumeleleyo be-600mbit s",
+            "dialect": "Unified MTN Zigi Baritone Persona",
+            "pitch_hz": 127.3,
+            "flatness": 0.0037,
+            "status": "active"
+        }
     }
     with open(os.path.join(TTS_V2_DST, "regional_anchors.json"), "w", encoding="utf-8") as f:
-        json.dump(anchors_info, f, indent=2)
+        json.dump(anchors_info, f, indent=2, ensure_ascii=False)
 
     with open(os.path.join(TTS_V2_DST, "README.md"), "w", encoding="utf-8") as f:
-        f.write("""# Multilingual TTS Model (Version 2 - Improved)
+        f.write("""# Multilingual TTS Model (Version 2 - Master Studio Edition)
 
-## Key Enhancements over V1:
-1. **Nigerian English (`en_ng`) First-Class Citizen**: Added authentic Nigerian English dataset (`benjaminogbonna/nigerian_accented_english_dataset`) with studio DSP cleaning.
-2. **Multi-Region Reference Anchor Routing**: Replaced single Xhosa prompt with regional anchors for Nigerian English, Pidgin, Swahili, Yoruba, Igbo, Hausa, Zulu, and Persian.
-3. **Anti-Word-Drop Hyperparameters**:
-   - `class_temperature: 0.10` (prevents swallowed phonemes and dropped words)
-   - `guidance_scale: 1.80` (strong text conditioning)
-   - `num_step: 36` (high acoustic resolution)
-   - `speed: 0.95` (calm, authoritative customer-service cadence)
+## Key Enhancements over V1 Baseline:
+1. **Unified Brand Persona (MTN Zigi)**:
+   - Preserves the authoritative, warm 120-128 Hz baritone persona across ALL languages.
+   - Eliminates voice fragmentation (all languages sound like the exact same brand voice).
+2. **Native Nigerian English (`en_ng`) First-Class Citizen**:
+   - Added clean Nigerian English dataset (`benjaminogbonna/nigerian_accented_english_dataset`).
+   - Powered by an authentic 119 Hz Nigerian English male baritone anchor.
+3. **Broadcast Studio DSP Mastering**:
+   - 65 Hz Butterworth high-pass rumble filter.
+   - Adaptive silence trimming at boundaries.
+   - Peak normalization to -1.0 dBFS (0.89 amplitude) with soft-clipping headroom.
+4. **Decoupled Natural Hyperparameters**:
+   - `guidance_scale: 1.05` (natural vocal tract formant resonance without robotic over-compression)
+   - `class_temperature: 0.50` (natural human prosody and micro-intonation)
+   - `num_step: 28` (optimum diffusion codebook fidelity)
+   - `speed: 1.00` (relaxed, authoritative customer-service cadence)
 """)
 
     # B. ASR V2
@@ -101,39 +120,25 @@ def package_v2():
             shutil.copy2(asr_weight_src, asr_weight_dst)
             print("  Copied ASR model.safetensors (151 MB)")
 
-    routing_info = {
-        "engine_architecture": "Dialect-Aware Hybrid (Whisper + Meta MMS)",
-        "routes": {
-            "en": "Whisper V2 (temperature=0.0, no_repeat_ngram_size=3)",
-            "en_ng": "Whisper V2 (Nigerian English phone-level decoding)",
-            "pcm": "Whisper V2 (English base with Pidgin lexical mapping)",
-            "fa": "Whisper V2 (Persian script decoder)",
-            "ha": "Whisper V2 (Hausa token mapping)",
-            "sw": "Whisper V2 (Swahili token mapping)",
-            "yo": "Whisper V2 / Meta MMS yor",
-            "ig": "Meta MMS ibo / Whisper phonetic alignment",
-            "zu": "Meta MMS zul / Whisper anti-repetition penalty (1.35)"
-        }
-    }
-    with open(os.path.join(ASR_V2_DST, "dialect_routing.json"), "w", encoding="utf-8") as f:
-        json.dump(routing_info, f, indent=2)
-
     with open(os.path.join(ASR_V2_DST, "README.md"), "w", encoding="utf-8") as f:
-        f.write("""# Multilingual ASR Engine (Version 2 - Dialect-Aware)
+        f.write("""# Dialect-Aware ASR Model (Version 2 - Improved)
 
 ## Key Enhancements over V1:
-1. **Dialect-Aware Routing**: Routes English, Nigerian English, Nigerian Pidgin, Persian, Swahili, Hausa, and Yoruba through optimized token tables.
+1. **Dialect-Aware Routing**: Direct Whisper language forcing for `en_ng`, `fa`, `sw`, `ha`, `yo`.
 2. **Anti-Hallucination & Anti-Repetition Guards**:
-   - `repetition_penalty: 1.35` (cures Whisper's infinite repetition loops)
-   - `no_repeat_ngram_size: 3` (stops stuttering)
-   - `temperature: 0.0` (eliminates random token hallucinations)
-3. **MMS Dual Engine Fallback**: Integrates Meta MMS acoustic adapters for low-resource African languages (Igbo `ibo`, isiZulu `zul`, Akan `aka`, Luganda `lug`).
+   - `temperature = 0.0`
+   - `no_repeat_ngram_size = 4`
+   - `repetition_penalty = 1.20`
+3. **Meta MMS Support**: Acoustic CTC adapters for low-resource African languages missing from Whisper.
 """)
 
-    print("✓ V2 Improved Models packaged in saved_models/v2_improved/")
+    print("✓ V2 Master Studio Models packaged.")
 
 
 if __name__ == "__main__":
+    print("=" * 60)
+    print("PACKAGING V1 BASELINE & V2 MASTER STUDIO MODELS")
+    print("=" * 60)
     package_v1()
     package_v2()
-
+    print("=" * 60)
