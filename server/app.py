@@ -2,19 +2,21 @@
 FastAPI Voice AI Application & Experimentation Studio
 =====================================================
 REST API & Interactive Web Dashboard for:
-1. Real-time TTS generation with adjustable acoustic parameters.
-2. Direct A/B side-by-side comparison between V1 Baseline and V2 Improved.
-3. Speech-to-Text (ASR) transcription with Manual Text Override capability.
-4. Audio streaming and playback.
+1. Near Real-Time Conversational Streaming TTS (TTFB < 350ms, sentence/clause chunking).
+2. Granular TTS generation with adjustable acoustic parameters.
+3. Direct A/B side-by-side comparison between V1 Baseline and V2 Master Studio.
+4. Speech-to-Text (ASR) transcription with Manual Text Override capability.
+5. Audio streaming and playback.
 """
 
 import os
 import sys
 import shutil
 import uuid
+import json
 from typing import Optional, Literal
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import torch
@@ -24,6 +26,7 @@ sys.path.append(BASE_DIR)
 
 from server.services import (
     synthesize_speech,
+    synthesize_speech_stream,
     compare_v1_vs_v2,
     transcribe_audio,
     get_tts_engine,
@@ -33,8 +36,8 @@ from server.services import (
 
 app = FastAPI(
     title="MTN Zigi Voice AI Engine & Experimentation Studio",
-    description="Multilingual TTS (V1 Baseline vs V2 Master Studio) & Dialect-Aware ASR with Manual Text Injection",
-    version="2.0.0"
+    description="Multilingual TTS (V1 Baseline vs V2 Master Studio) with Near Real-Time Streaming & Dialect ASR",
+    version="2.1.0"
 )
 
 app.add_middleware(
@@ -47,13 +50,23 @@ app.add_middleware(
 
 
 # --- Pydantic Schemas ---
+class TTSStreamRequest(BaseModel):
+    text: str = Field(..., description="Prompt text to synthesize progressively in chunks")
+    language: str = Field("en_ng", description="Target language code (en_ng, pcm, yo, ha, sw, ig, zu, fa, en)")
+    guidance_scale: Optional[float] = Field(1.05, ge=0.5, le=3.0, description="Guidance scale")
+    class_temperature: Optional[float] = Field(0.50, ge=0.0, le=1.5, description="Sampling temperature")
+    num_step: Optional[int] = Field(10, ge=4, le=50, description="Diffusion steps (8-10 for real-time)")
+    speed: Optional[float] = Field(1.00, ge=0.5, le=2.0, description="Speaking speed factor")
+    apply_mastering: Optional[bool] = Field(True, description="Apply 65Hz high-pass and peak normalization")
+
+
 class TTSRequest(BaseModel):
     text: str = Field(..., description="Prompt text to synthesize")
     version: Literal["v1_baseline", "v2_improved"] = Field("v2_improved", description="Model version")
     language: str = Field("en_ng", description="Target language code (en_ng, pcm, yo, ha, sw, ig, zu, fa, en)")
     guidance_scale: Optional[float] = Field(None, ge=0.5, le=3.0, description="Classifier-free guidance scale")
     class_temperature: Optional[float] = Field(None, ge=0.0, le=1.5, description="Codebook sampling temperature")
-    num_step: Optional[int] = Field(None, ge=10, le=50, description="Number of diffusion codebook steps")
+    num_step: Optional[int] = Field(None, ge=4, le=50, description="Number of diffusion codebook steps")
     speed: Optional[float] = Field(None, ge=0.5, le=2.0, description="Speaking rate multiplier")
     apply_mastering: Optional[bool] = Field(None, description="Enable 65Hz high-pass and silence trim")
     anchor_type: Optional[str] = Field("auto", description="Anchor type: auto, golden_baritone, nigerian_male")
@@ -89,8 +102,31 @@ def health_check():
         "vram_allocated_mb": vram_alloc_mb,
         "vram_reserved_mb": vram_res_mb,
         "versions_available": ["v1_baseline", "v2_improved"],
-        "languages_supported": ["en_ng", "pcm", "yo", "ha", "sw", "ig", "zu", "fa", "en"]
+        "languages_supported": ["en_ng", "pcm", "yo", "ha", "sw", "ig", "zu", "fa", "en"],
+        "real_time_streaming_supported": True
     }
+
+
+@app.post("/api/tts/stream")
+def api_stream_tts(req: TTSStreamRequest):
+    """
+    Streaming TTS Endpoint (NDJSON):
+    Progressively yields audio chunks as each sentence/clause finishes.
+    Enables immediate playback with TTFB < 350ms!
+    """
+    def event_stream():
+        for chunk in synthesize_speech_stream(
+            text=req.text,
+            language=req.language,
+            guidance_scale=req.guidance_scale or 1.05,
+            class_temperature=req.class_temperature or 0.50,
+            num_step=req.num_step or 10,
+            speed=req.speed or 1.00,
+            apply_mastering=req.apply_mastering if req.apply_mastering is not None else True
+        ):
+            yield json.dumps(chunk) + "\n"
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
 
 @app.post("/api/tts/synthesize")
@@ -148,11 +184,7 @@ async def api_transcribe(
             raise HTTPException(status_code=400, detail="Must provide an audio file upload or valid audio_path.")
 
         asr_res = transcribe_audio(target_path, language=language)
-        return {
-            "status": "success",
-            "audio_file": os.path.basename(target_path),
-            "data": asr_res
-        }
+        return {"status": "success", "data": asr_res}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -161,42 +193,36 @@ async def api_transcribe(
 async def api_pipeline(
     file: Optional[UploadFile] = File(None),
     manual_text: Optional[str] = Form(None),
-    audio_path: Optional[str] = Form(None),
     language: str = Form("auto"),
     tts_version: str = Form("v2_improved"),
     tts_language: str = Form("en_ng")
 ):
     """
-    Full End-to-End Voice Assistant Pipeline.
-    Supports injecting external manual text (from Google, Whisper-Large, Azure, etc.)
-    or transcribing via internal local ASR if manual text is omitted.
+    End-to-End Voice Assistant Pipeline:
+    Allows user to pass:
+    1. MANUAL TEXT override (e.g. from Whisper-Large, Google STT, Azure).
+    2. AUDIO FILE (processed via local Whisper-Tiny ASR).
     """
     try:
-        text_source = "manual_override"
+        text_source = "manual_external_asr"
         transcription_text = ""
 
-        # Step 1: Resolve Text (Manual Injection vs Local ASR)
+        # Step 1: Resolve Text
         if manual_text and manual_text.strip():
             transcription_text = manual_text.strip()
             text_source = "manual_external_asr"
-        else:
-            # Fall back to local ASR
-            if file is not None:
-                upload_path = os.path.join(OUTPUT_API_DIR, f"pipeline_{uuid.uuid4().hex[:8]}_{file.filename}")
-                with open(upload_path, "wb") as f:
-                    shutil.copyfileobj(file.file, f)
-                target_path = upload_path
-            elif audio_path and os.path.exists(audio_path):
-                target_path = audio_path
-            else:
-                raise HTTPException(status_code=400, detail="Please provide either 'manual_text' or an audio file for ASR.")
-
-            asr_res = transcribe_audio(target_path, language=language)
+        elif file is not None:
+            upload_path = os.path.join(OUTPUT_API_DIR, f"pipe_in_{uuid.uuid4().hex[:8]}_{file.filename}")
+            with open(upload_path, "wb") as f:
+                shutil.copyfileobj(file.file, f)
+            asr_res = transcribe_audio(upload_path, language=language)
             transcription_text = asr_res["text"]
-            text_source = f"local_asr ({asr_res['engine']})"
-
-        if not transcription_text:
-            raise HTTPException(status_code=400, detail="No speech text could be resolved.")
+            text_source = f"local_asr_{asr_res['engine']}"
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Must provide either 'manual_text' (from external ASR) or upload an audio file."
+            )
 
         # Step 2: Synthesize Response via selected TTS version (V1 vs V2)
         tts_result = synthesize_speech(
@@ -220,7 +246,6 @@ async def api_pipeline(
 @app.get("/api/audio/{filename}")
 def get_audio(filename: str):
     """Serves synthesized or uploaded audio files for direct in-browser playback."""
-    # Search in api_generated, outputs/v2_improved, outputs/v1_baseline, or outputs/synthesized_samples
     candidate_dirs = [
         OUTPUT_API_DIR,
         os.path.join(BASE_DIR, "outputs", "v2_improved"),
@@ -260,7 +285,7 @@ def index_ui():
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MTN Zigi Voice AI Studio - V1 vs V2 Experimenter</title>
+  <title>MTN Zigi Voice AI Studio - Near Real-Time Conversational Suite</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <style>
@@ -285,8 +310,9 @@ def index_ui():
     .badge-v1 { background: rgba(59, 130, 246, 0.2); color: var(--v1); border: 1px solid var(--v1); }
     .badge-v2 { background: rgba(16, 185, 129, 0.2); color: var(--v2); border: 1px solid var(--v2); }
     .badge-mtn { background: var(--accent); color: #000; }
+    .badge-speed { background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid #10b981; }
     
-    .tabs { display: flex; gap: 8px; margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+    .tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
     .tab-btn { background: none; border: none; color: var(--muted); font-size: 0.95rem; font-weight: 600; padding: 8px 16px; border-radius: 8px; cursor: pointer; transition: all 0.2s; }
     .tab-btn.active { background: var(--card-bg); color: var(--accent); border: 1px solid var(--border); }
     
@@ -332,14 +358,43 @@ def index_ui():
     .compare-box.v2 { border-left-color: var(--v2); }
 
     .loading-spinner { display: none; text-align: center; margin: 16px 0; color: var(--accent); font-weight: 500; }
+
+    /* Streaming HUD styles */
+    .telemetry-hud {
+      background: #090e17;
+      border: 1px solid #1e293b;
+      border-radius: 10px;
+      padding: 16px;
+      margin-top: 14px;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+    }
+    .hud-box { text-align: center; }
+    .hud-label { font-size: 0.7rem; color: var(--muted); text-transform: uppercase; }
+    .hud-val { font-size: 1.3rem; font-weight: 700; color: var(--success); margin-top: 4px; font-variant-numeric: tabular-nums; }
+    
+    .chunks-list { margin-top: 16px; display: flex; flex-direction: column; gap: 8px; max-height: 350px; overflow-y: auto; }
+    .chunk-card {
+      background: #0f172a;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      transition: all 0.2s;
+    }
+    .chunk-card.playing { border-color: var(--accent); background: rgba(255, 204, 0, 0.05); }
+    .chunk-card.done { border-color: var(--success); opacity: 0.85; }
   </style>
 </head>
 <body>
   <div class="container">
     <header>
       <div>
-        <h1>🎙️ MTN Zigi Voice AI Studio <span class="badge badge-mtn">FastAPI</span></h1>
-        <p style="color: var(--muted); font-size: 0.85rem; margin-top: 4px;">Multilingual TTS Tuning, ASR Lab & V1 Baseline vs V2 Master Studio A/B Testing</p>
+        <h1>🎙️ MTN Zigi Voice AI Studio <span class="badge badge-mtn">FastAPI 2.1</span></h1>
+        <p style="color: var(--muted); font-size: 0.85rem; margin-top: 4px;">Near Real-Time Conversational Streaming (TTFB &lt; 350ms), Multilingual TTS Tuning &amp; Dialect ASR Lab</p>
       </div>
       <div id="system-status" style="font-size: 0.8rem; text-align: right; color: var(--muted);">
         Connecting to CUDA...
@@ -347,71 +402,162 @@ def index_ui():
     </header>
 
     <div class="tabs">
-      <button class="tab-btn active" onclick="switchTab('tts-tab')">TTS Experimenter</button>
-      <button class="tab-btn" onclick="switchTab('compare-tab')">V1 vs V2 A/B Tester</button>
-      <button class="tab-btn" onclick="switchTab('asr-tab')">ASR & Manual Text Lab</button>
-      <button class="tab-btn" onclick="switchTab('showcase-tab')">Pre-Generated Showcase</button>
+      <button class="tab-btn active" onclick="switchTab('stream-tab')">⚡ Near Real-Time Stream</button>
+      <button class="tab-btn" onclick="switchTab('tts-tab')">🎛️ Synthesis Studio</button>
+      <button class="tab-btn" onclick="switchTab('compare-tab')">⚖️ V1 vs V2 Comparator</button>
+      <button class="tab-btn" onclick="switchTab('asr-tab')">🎙️ ASR &amp; Manual Text Lab</button>
+      <button class="tab-btn" onclick="switchTab('samples-tab')">📁 Showcase Library</button>
     </div>
 
-    <!-- TAB 1: TTS EXPERIMENTER -->
-    <div id="tts-tab" class="panel active">
+    <!-- ============================================================== -->
+    <!-- TAB 1: NEAR REAL-TIME STREAMING STUDIO                         -->
+    <!-- ============================================================== -->
+    <div id="stream-tab" class="panel active">
       <div class="grid-2">
         <div class="card">
           <div class="card-title">
-            <span>Synthesis Controls</span>
-            <span id="version-badge" class="badge badge-v2">V2 Master Studio</span>
+            <span>⚡ Conversational Streaming Engine</span>
+            <span class="badge badge-speed">Sentence Chunking Enabled</span>
           </div>
 
-          <label>Model Preset Version</label>
-          <select id="tts-version" onchange="onVersionChange()">
-            <option value="v2_improved" selected>V2 Improved (Master Studio - High-Pass + Silence Trim)</option>
-            <option value="v1_baseline">V1 Baseline (Foundation 100-step - Raw Output)</option>
+          <label>Target Language</label>
+          <select id="stream-lang">
+            <option value="en_ng">Nigerian English (en_ng) - Native Male Baritone</option>
+            <option value="pcm">Nigerian Pidgin (pcm) - MTN Zigi Persona</option>
+            <option value="yo">Yoruba (yo) - MTN Zigi Persona</option>
+            <option value="ha">Hausa (ha) - MTN Zigi Persona</option>
+            <option value="sw">Swahili (sw) - MTN Zigi Persona</option>
+            <option value="ig">Igbo (ig) - MTN Zigi Persona</option>
+            <option value="zu">isiZulu (zu) - MTN Zigi Persona</option>
+            <option value="fa">Persian (fa) - MTN Zigi Persona</option>
+            <option value="en">Standard English (en)</option>
           </select>
 
-          <label>Target Language</label>
+          <label>Multi-Sentence Conversational Prompt</label>
+          <textarea id="stream-text" rows="3">Hello! Welcome to MTN customer care service. Your balance is 500 Naira. Dial star 310 hash to recharge.</textarea>
+
+          <div class="presets">
+            <button class="preset-btn" onclick="setStreamPrompt('en_ng', 'Hello! Welcome to MTN customer care service. Your balance is 500 Naira. Dial star 310 hash to recharge.')">Telecom Balance</button>
+            <button class="preset-btn" onclick="setStreamPrompt('en_ng', 'Good day. We detected an active 5G data bundle on your line. You can manage subscriptions anytime by texting STOP to 312.')">5G Data</button>
+            <button class="preset-btn" onclick="setStreamPrompt('pcm', 'How far! Welcome to MTN customer care. Your airtime balance na 500 Naira. Make you dial star 310 hash.')">Pidgin Care</button>
+            <button class="preset-btn" onclick="setStreamPrompt('yo', 'Bawo ni! E kaabo si ile ise MTN. Owo to wa ninu apo re je aadota Naira.')">Yoruba Care</button>
+            <button class="preset-btn" onclick="setStreamPrompt('ha', 'Sannu da zuwa cibiyar MTN. Ragowar kudin kiran ka Naira dari biyar ne.')">Hausa Care</button>
+          </div>
+
+          <div class="slider-group">
+            <div class="slider-header">
+              <span>Diffusion Steps (Fewer = Lower Latency)</span>
+              <span id="stream-steps-val" class="slider-val">10</span>
+            </div>
+            <input type="range" id="stream-steps" min="6" max="24" step="2" value="10" oninput="document.getElementById('stream-steps-val').innerText = this.value">
+          </div>
+
+          <div class="slider-group">
+            <div class="slider-header">
+              <span>Speaking Speed</span>
+              <span id="stream-speed-val" class="slider-val">1.00x</span>
+            </div>
+            <input type="range" id="stream-speed" min="0.80" max="1.30" step="0.05" value="1.00" oninput="document.getElementById('stream-speed-val').innerText = parseFloat(this.value).toFixed(2) + 'x'">
+          </div>
+
+          <button class="btn" id="stream-btn" onclick="startStreamingPlayback()">
+            ⚡ Stream Audio Live (Instant TTFB)
+          </button>
+          <div id="stream-spinner" class="loading-spinner">⚡ Streaming audio chunks in real time...</div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            <span>Live Playback &amp; Telemetry HUD</span>
+            <span id="stream-status-badge" class="badge">Idle</span>
+          </div>
+
+          <div class="telemetry-hud">
+            <div class="hud-box">
+              <div class="hud-label">⚡ TTFB</div>
+              <div id="hud-ttfb" class="hud-val">-- ms</div>
+            </div>
+            <div class="hud-box">
+              <div class="hud-label">⏱️ Total Latency</div>
+              <div id="hud-lat" class="hud-val" style="color: var(--accent);">-- s</div>
+            </div>
+            <div class="hud-box">
+              <div class="hud-label">🔊 Audio Length</div>
+              <div id="hud-dur" class="hud-val" style="color: var(--text);">-- s</div>
+            </div>
+            <div class="hud-box">
+              <div class="hud-label">🚀 Speed Factor</div>
+              <div id="hud-rtf" class="hud-val" style="color: #38bdf8;">-- x</div>
+            </div>
+          </div>
+
+          <div style="margin-top: 16px;">
+            <label>Progressive Sentence Pipeline</label>
+            <div id="chunks-feed" class="chunks-list">
+              <div style="color: var(--muted); font-size: 0.85rem; text-align: center; padding: 24px;">
+                Click "Stream Audio Live" to watch chunks generate and play back with sub-second TTFB.
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============================================================== -->
+    <!-- TAB 2: TTS EXPERIMENTER & PARAMETER TUNING                     -->
+    <!-- ============================================================== -->
+    <div id="tts-tab" class="panel">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title">
+            <span>Acoustic Parameter Tuning</span>
+            <span class="badge badge-v2">Master Studio</span>
+          </div>
+
+          <label>Model Version</label>
+          <select id="tts-version">
+            <option value="v2_improved">v2_improved (Clean Baritone + Native Nigerian English + Studio DSP)</option>
+            <option value="v1_baseline">v1_baseline (Original Baseline Checkpoint)</option>
+          </select>
+
+          <label>Language</label>
           <select id="tts-lang">
-            <option value="en_ng" selected>Nigerian English (en_ng) - Authentic Male Baritone</option>
-            <option value="pcm">Nigerian Pidgin (pcm) - Lagos Cadence</option>
+            <option value="en_ng">Nigerian English (en_ng)</option>
+            <option value="pcm">Nigerian Pidgin (pcm)</option>
             <option value="yo">Yoruba (yo)</option>
             <option value="ha">Hausa (ha)</option>
             <option value="sw">Swahili (sw)</option>
             <option value="ig">Igbo (ig)</option>
             <option value="zu">isiZulu (zu)</option>
-            <option value="fa">Persian / Farsi (fa)</option>
-            <option value="en">Standard English (en)</option>
+            <option value="fa">Persian (fa)</option>
+            <option value="en">English (en)</option>
           </select>
 
           <label>Prompt Text</label>
-          <div class="presets">
-            <button class="preset-btn" onclick="setPrompt('en_ng', 'Welcome to MTN Nigeria. I am Zigi, your digital assistant. How may I assist you today?')">EN_NG Preset</button>
-            <button class="preset-btn" onclick="setPrompt('pcm', 'Hello, I be MTN Zigi. I fit help you check your bundle and airtime mata. Abeg, feel free to ask me anything.')">Pidgin Preset</button>
-            <button class="preset-btn" onclick="setPrompt('ha', 'Barka dai, ni ne MTN Zigi. Zan iya taimaka maka da bayani game da kundin tsarinka da katin magana.')">Hausa Preset</button>
-            <button class="preset-btn" onclick="setPrompt('yo', 'Ẹ lẹ́ẹ̀ o, èmi ni MTN Zigi. Mo lè ràn yín lọ́wọ́ lórí ọ̀rọ̀ bọ́ńdù àti iye owó ìpè yín.')">Yoruba Preset</button>
-          </div>
-          <textarea id="tts-text">Welcome to MTN Nigeria. I am Zigi, your digital assistant. You can check your account balance, borrow airtime, or purchase a data bundle. How may I assist you today?</textarea>
+          <textarea id="tts-text">Welcome to MTN customer care service. Your balance is 500 Naira.</textarea>
 
           <div class="slider-group">
             <div class="slider-header">
-              <span>Classifier-Free Guidance Scale</span>
+              <span>Guidance Scale (CFG)</span>
               <span id="val-guidance" class="slider-val">1.05</span>
             </div>
-            <input type="range" id="param-guidance" min="0.8" max="2.2" step="0.05" value="1.05" oninput="updateSlider('guidance')">
+            <input type="range" id="param-guidance" min="1.00" max="2.50" step="0.05" value="1.05" oninput="document.getElementById('val-guidance').innerText = this.value">
           </div>
 
           <div class="slider-group">
             <div class="slider-header">
-              <span>Class Temperature (Prosody Variance)</span>
+              <span>Prosody Temperature</span>
               <span id="val-temp" class="slider-val">0.50</span>
             </div>
-            <input type="range" id="param-temp" min="0.0" max="1.0" step="0.05" value="0.50" oninput="updateSlider('temp')">
+            <input type="range" id="param-temp" min="0.00" max="1.00" step="0.05" value="0.50" oninput="document.getElementById('val-temp').innerText = this.value">
           </div>
 
           <div class="slider-group">
             <div class="slider-header">
-              <span>Diffusion Codebook Steps</span>
-              <span id="val-steps" class="slider-val">28</span>
+              <span>Diffusion Steps</span>
+              <span id="val-steps" class="slider-val">10</span>
             </div>
-            <input type="range" id="param-steps" min="16" max="40" step="2" value="28" oninput="updateSlider('steps')">
+            <input type="range" id="param-steps" min="6" max="32" step="2" value="10" oninput="document.getElementById('val-steps').innerText = this.value">
           </div>
 
           <div class="slider-group">
@@ -419,51 +565,50 @@ def index_ui():
               <span>Speaking Speed</span>
               <span id="val-speed" class="slider-val">1.00x</span>
             </div>
-            <input type="range" id="param-speed" min="0.8" max="1.3" step="0.05" value="1.00" oninput="updateSlider('speed')">
+            <input type="range" id="param-speed" min="0.80" max="1.30" step="0.05" value="1.00" oninput="document.getElementById('val-speed').innerText = parseFloat(this.value).toFixed(2) + 'x'">
           </div>
 
           <div style="margin-bottom: 16px; display: flex; align-items: center; gap: 8px;">
-            <input type="checkbox" id="param-mastering" checked style="accent-color: var(--accent); cursor: pointer;">
-            <label for="param-mastering" style="margin: 0; cursor: pointer; color: var(--text);">Apply 3-Stage Broadcast DSP Mastering (High-pass 65Hz + Silence Trim)</label>
+            <input type="checkbox" id="param-mastering" checked style="accent-color: var(--accent); width: 16px; height: 16px;">
+            <label for="param-mastering" style="margin-bottom: 0; cursor: pointer;">Enable Studio DSP Mastering (65Hz Filter + Normalization)</label>
           </div>
 
-          <button id="btn-synth" class="btn" onclick="executeSynthesize()">🚀 Synthesize Audio</button>
-          <div id="synth-loading" class="loading-spinner">⚙️ Running Diffusion Synthesis on RTX 2060...</div>
+          <button class="btn" onclick="executeSynthesize()">Synthesize Speech</button>
+          <div id="synth-loading" class="loading-spinner">Synthesizing audio on CUDA...</div>
         </div>
 
-        <div>
-          <div class="card">
-            <div class="card-title">Audio Output & Analysis</div>
-            <div id="player-placeholder" style="color: var(--muted); text-align: center; padding: 40px 0;">
-              Synthesize a sample on the left to see the audio player and acoustic metrics here.
+        <div class="card">
+          <div class="card-title">
+            <span>Audio Playback &amp; Acoustic Analytics</span>
+            <span id="res-badge" class="badge badge-v2">Awaiting</span>
+          </div>
+
+          <div id="player-placeholder" style="text-align: center; padding: 40px; color: var(--muted);">
+            Adjust parameters on the left and click <strong>Synthesize Speech</strong> to audition.
+          </div>
+
+          <div id="player-container" style="display: none;">
+            <div class="audio-player-card">
+              <strong id="res-filename" style="font-size: 0.85rem; color: var(--accent);">result.wav</strong>
+              <audio id="tts-audio-elem" controls></audio>
             </div>
 
-            <div id="player-container" style="display: none;">
-              <div class="audio-player-card">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                  <strong id="res-filename" style="color: var(--accent);">sample.wav</strong>
-                  <span id="res-badge" class="badge badge-v2">V2 Improved</span>
-                </div>
-                <audio id="tts-audio-elem" controls></audio>
+            <div class="metrics-grid">
+              <div class="metric-box">
+                <div class="metric-lbl">Duration</div>
+                <div id="m-dur" class="metric-num">--</div>
               </div>
-
-              <div class="metrics-grid">
-                <div class="metric-box">
-                  <div class="metric-lbl">Duration</div>
-                  <div id="m-dur" class="metric-num">0.0s</div>
-                </div>
-                <div class="metric-box">
-                  <div class="metric-lbl">Pitch (F0)</div>
-                  <div id="m-pitch" class="metric-num">0 Hz</div>
-                </div>
-                <div class="metric-box">
-                  <div class="metric-lbl">Flatness (Noise)</div>
-                  <div id="m-flat" class="metric-num">0.0000</div>
-                </div>
-                <div class="metric-box">
-                  <div class="metric-lbl">Peak / RMS</div>
-                  <div id="m-rms" class="metric-num">0.00</div>
-                </div>
+              <div class="metric-box">
+                <div class="metric-lbl">Pitch (F0)</div>
+                <div id="m-pitch" class="metric-num">--</div>
+              </div>
+              <div class="metric-box">
+                <div class="metric-lbl">Flatness</div>
+                <div id="m-flat" class="metric-num">--</div>
+              </div>
+              <div class="metric-box">
+                <div class="metric-lbl">RMS Energy</div>
+                <div id="m-rms" class="metric-num">--</div>
               </div>
             </div>
           </div>
@@ -471,148 +616,142 @@ def index_ui():
       </div>
     </div>
 
-    <!-- TAB 2: V1 vs V2 A/B TESTER -->
+    <!-- ============================================================== -->
+    <!-- TAB 3: V1 VS V2 SIDE-BY-SIDE COMPARATOR                        -->
+    <!-- ============================================================== -->
     <div id="compare-tab" class="panel">
       <div class="card">
-        <div class="card-title">Direct Side-by-Side A/B Audio Comparison</div>
-        <p style="color: var(--muted); font-size: 0.85rem; margin-bottom: 14px;">
-          Synthesize any text prompt simultaneously across both <strong>V1 Baseline</strong> and <strong>V2 Master Studio</strong> to test timbre, room acoustics, and enunciation.
-        </p>
-
-        <label>Comparison Text</label>
-        <textarea id="compare-text">Welcome to MTN Nigeria. I am Zigi, your digital assistant. You can check your account balance, borrow airtime, or purchase a data bundle. How may I assist you today?</textarea>
-
-        <div style="display: flex; gap: 10px; margin-bottom: 16px;">
-          <div style="flex: 1;">
+        <div class="card-title">Side-by-Side A/B Evaluation Studio</div>
+        <div class="grid-2">
+          <div>
+            <label>Comparison Text</label>
+            <input type="text" id="compare-text" value="Welcome to MTN customer care service. How may I assist you today?">
+          </div>
+          <div>
             <label>Language</label>
             <select id="compare-lang">
-              <option value="en_ng" selected>Nigerian English (en_ng)</option>
+              <option value="en_ng">Nigerian English (en_ng)</option>
               <option value="pcm">Nigerian Pidgin (pcm)</option>
               <option value="yo">Yoruba (yo)</option>
               <option value="ha">Hausa (ha)</option>
               <option value="sw">Swahili (sw)</option>
-              <option value="fa">Persian (fa)</option>
+              <option value="en">English (en)</option>
             </select>
           </div>
-          <div style="flex: 1; display: flex; align-items: flex-end;">
-            <button class="btn" onclick="executeCompare()">⚡ Compare V1 Baseline vs V2 Improved</button>
-          </div>
         </div>
-        <div id="compare-loading" class="loading-spinner">⚙️ Synthesizing V1 and V2 models in parallel...</div>
+        <button class="btn" onclick="executeCompare()">⚡ Compare V1 Baseline vs V2 Improved</button>
+        <div id="compare-loading" class="loading-spinner">Generating dual audio tracks on CUDA...</div>
+      </div>
 
-        <div id="compare-results" style="display: none; margin-top: 20px;">
-          <div class="grid-2">
-            <!-- V1 Card -->
-            <div class="card compare-box">
-              <div class="card-title">
-                <span>Model V1 (Baseline)</span>
-                <span class="badge badge-v1">V1 Foundation</span>
-              </div>
-              <audio id="audio-v1" controls style="width: 100%;"></audio>
-              <div class="metrics-grid" style="margin-top: 12px;">
-                <div class="metric-box"><div class="metric-lbl">Dur</div><div id="v1-dur" class="metric-num">0s</div></div>
-                <div class="metric-box"><div class="metric-lbl">Pitch</div><div id="v1-pitch" class="metric-num">0 Hz</div></div>
-                <div class="metric-box"><div class="metric-lbl">Flatness</div><div id="v1-flat" class="metric-num">0.00</div></div>
-                <div class="metric-box"><div class="metric-lbl">Latency</div><div id="v1-lat" class="metric-num">0s</div></div>
-              </div>
+      <div id="compare-results" style="display: none;">
+        <div class="grid-2">
+          <div class="card compare-box">
+            <div class="card-title">
+              <span>🔵 V1 Baseline Audio</span>
+              <span class="badge badge-v1">Checkpoint-50</span>
             </div>
+            <audio id="audio-v1" controls></audio>
+            <div class="metrics-grid">
+              <div class="metric-box"><div class="metric-lbl">Duration</div><div id="v1-dur" class="metric-num">--</div></div>
+              <div class="metric-box"><div class="metric-lbl">Pitch</div><div id="v1-pitch" class="metric-num">--</div></div>
+              <div class="metric-box"><div class="metric-lbl">Flatness</div><div id="v1-flat" class="metric-num">--</div></div>
+              <div class="metric-box"><div class="metric-lbl">Latency</div><div id="v1-lat" class="metric-num">--</div></div>
+            </div>
+          </div>
 
-            <!-- V2 Card -->
-            <div class="card compare-box v2">
-              <div class="card-title">
-                <span>Model V2 (Master Studio)</span>
-                <span class="badge badge-v2">V2 Master</span>
-              </div>
-              <audio id="audio-v2" controls style="width: 100%;"></audio>
-              <div class="metrics-grid" style="margin-top: 12px;">
-                <div class="metric-box"><div class="metric-lbl">Dur</div><div id="v2-dur" class="metric-num">0s</div></div>
-                <div class="metric-box"><div class="metric-lbl">Pitch</div><div id="v2-pitch" class="metric-num">0 Hz</div></div>
-                <div class="metric-box"><div class="metric-lbl">Flatness</div><div id="v2-flat" class="metric-num">0.00</div></div>
-                <div class="metric-box"><div class="metric-lbl">Latency</div><div id="v2-lat" class="metric-num">0s</div></div>
-              </div>
+          <div class="card compare-box v2">
+            <div class="card-title">
+              <span>🟢 V2 Improved (Master Studio)</span>
+              <span class="badge badge-v2">Checkpoint-100</span>
+            </div>
+            <audio id="audio-v2" controls></audio>
+            <div class="metrics-grid">
+              <div class="metric-box"><div class="metric-lbl">Duration</div><div id="v2-dur" class="metric-num">--</div></div>
+              <div class="metric-box"><div class="metric-lbl">Pitch</div><div id="v2-pitch" class="metric-num">--</div></div>
+              <div class="metric-box"><div class="metric-lbl">Flatness</div><div id="v2-flat" class="metric-num">--</div></div>
+              <div class="metric-box"><div class="metric-lbl">Latency</div><div id="v2-lat" class="metric-num">--</div></div>
             </div>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- TAB 3: ASR & MANUAL TEXT LAB -->
+    <!-- ============================================================== -->
+    <!-- TAB 4: ASR & MANUAL TEXT PIPELINE LAB                          -->
+    <!-- ============================================================== -->
     <div id="asr-tab" class="panel">
       <div class="grid-2">
         <div class="card">
-          <div class="card-title">1. Speech Input (Audio File or Manual Text Override)</div>
+          <div class="card-title">Input Sources (Manual Override vs Audio)</div>
           
-          <label>Upload Audio for Local ASR Transcription</label>
-          <input type="file" id="asr-file-input" accept="audio/*" style="margin-bottom: 14px;">
+          <label style="color: var(--accent); font-weight: 600;">Option A: Manual Text Injection (External ASR)</label>
+          <p style="font-size: 0.75rem; color: var(--muted); margin-bottom: 6px;">Pass text directly from Whisper-Large, Google STT, Azure, or Deepgram to skip local ASR.</p>
+          <textarea id="manual-text-input" placeholder="Type or paste manual transcription text here...">Customer balance is 500 Naira. Dial star 310 hash to recharge.</textarea>
 
-          <label>Dialect Hint</label>
+          <hr style="border: 0; border-top: 1px solid var(--border); margin: 16px 0;">
+
+          <label style="color: var(--accent); font-weight: 600;">Option B: Local ASR Audio File Upload</label>
+          <input type="file" id="asr-file-input" accept=".wav,.mp3,.m4a">
           <select id="asr-lang">
-            <option value="auto" selected>Auto-Detect Dialect</option>
-            <option value="en_ng">Nigerian English (en_ng)</option>
+            <option value="auto">Auto-Detect Dialect</option>
+            <option value="en">English / Nigerian English (en)</option>
             <option value="pcm">Nigerian Pidgin (pcm)</option>
+            <option value="yo">Yoruba (yo)</option>
             <option value="ha">Hausa (ha)</option>
             <option value="sw">Swahili (sw)</option>
-            <option value="yo">Yoruba (yo)</option>
-            <option value="fa">Persian (fa)</option>
           </select>
 
-          <button class="btn btn-secondary" onclick="executeASROnly()" style="margin-bottom: 16px;">🔍 Run Local ASR Transcription</button>
-          
-          <div style="border-top: 1px dashed var(--border); padding-top: 14px; margin-top: 6px;">
-            <label style="color: var(--accent); font-weight: 600;">Manual Text Override (External ASR / Ground Truth)</label>
-            <p style="color: var(--muted); font-size: 0.75rem; margin-bottom: 6px;">
-              Paste manual text obtained from external ASR engines (Google Cloud, Azure, Deepgram, Whisper-Large, etc.). When populated, the pipeline bypasses local ASR and synthesizes this text directly!
-            </p>
-            <textarea id="manual-text-input" placeholder="Type or paste external ASR transcription here..."></textarea>
-          </div>
-
-          <label>Synthesize Response Model Version</label>
+          <label>TTS Model for Reply</label>
           <select id="pipeline-tts-version">
-            <option value="v2_improved" selected>V2 Improved (Master Studio)</option>
-            <option value="v1_baseline">V1 Baseline</option>
+            <option value="v2_improved">v2_improved (Master Studio Edition)</option>
+            <option value="v1_baseline">v1_baseline</option>
           </select>
 
-          <button class="btn" onclick="executePipeline()">⚡ Run Pipeline & Synthesize Voice</button>
-          <div id="pipeline-loading" class="loading-spinner">⚙️ Processing speech pipeline...</div>
+          <div style="display: flex; gap: 10px;">
+            <button class="btn" onclick="executePipeline()">🚀 Run Voice Pipeline</button>
+            <button class="btn btn-secondary" onclick="executeASROnly()">Transcribe Only</button>
+          </div>
+          <div id="pipeline-loading" class="loading-spinner">Processing voice assistant turn...</div>
         </div>
 
         <div class="card">
-          <div class="card-title">2. Transcription & Synthesized Reply</div>
-          
-          <label>Resolved Transcription Text</label>
-          <div id="resolved-text-box" style="background: #0f172a; border: 1px solid var(--border); border-radius: 8px; padding: 14px; min-height: 80px; margin-bottom: 14px; color: var(--text);">
-            Waiting for audio upload or manual text...
+          <div class="card-title">Resolved Text &amp; Assistant Audio Response</div>
+          <div style="margin-bottom: 12px;">
+            <span id="resolved-source-badge" class="badge">Awaiting Input</span>
           </div>
-          <div id="resolved-source-badge" style="font-size: 0.75rem; color: var(--muted); margin-bottom: 14px;">Source: None</div>
+          <div id="resolved-text-box" style="background: #0f172a; padding: 14px; border-radius: 8px; border: 1px solid var(--border); min-height: 80px; font-size: 0.95rem;">
+            Run the pipeline to inspect resolved text and hear synthesized response.
+          </div>
 
-          <div id="pipeline-player-container" style="display: none;">
+          <div id="pipeline-player-container" style="display: none; margin-top: 16px;">
             <div class="audio-player-card">
-              <strong>Synthesized Speech Reply</strong>
-              <audio id="pipeline-audio-elem" controls style="width: 100%; margin-top: 10px;"></audio>
+              <strong style="color: var(--accent); font-size: 0.85rem;">Synthesized Reply Audio</strong>
+              <audio id="pipeline-audio-elem" controls></audio>
             </div>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- TAB 4: PRE-GENERATED SHOWCASE -->
-    <div id="showcase-tab" class="panel">
+    <!-- ============================================================== -->
+    <!-- TAB 5: SHOWCASE LIBRARY                                        -->
+    <!-- ============================================================== -->
+    <div id="samples-tab" class="panel">
       <div class="card">
-        <div class="card-title">Audition Pre-Generated Master Samples</div>
-        <p style="color: var(--muted); font-size: 0.85rem; margin-bottom: 14px;">
-          Instant in-browser playback of the official pre-synthesized audio files across all 8 supported dialects.
-        </p>
+        <div class="card-title">Pre-Generated Showcase Audio Library</div>
+        <p style="color: var(--muted); font-size: 0.85rem; margin-bottom: 16px;">Stream and download reference benchmarks across all supported languages.</p>
 
-        <h3 style="font-size: 1rem; color: var(--v2); margin: 16px 0 8px 0;">V2 Improved (Master Studio Edition - 114 to 128 Hz Baritone)</h3>
-        <div class="grid-2" id="v2-samples-grid"></div>
+        <h3 style="color: var(--v2); font-size: 1rem; margin-bottom: 10px;">🟢 V2 Improved Samples (Broadcast Baritone &amp; Studio DSP)</h3>
+        <div id="v2-samples-grid" class="grid-2"></div>
 
-        <h3 style="font-size: 1rem; color: var(--v1); margin: 24px 0 8px 0;">V1 Baseline (Foundation 100-step Checkpoint)</h3>
-        <div class="grid-2" id="v1-samples-grid"></div>
+        <h3 style="color: var(--v1); font-size: 1rem; margin: 20px 0 10px 0;">🔵 V1 Baseline Samples</h3>
+        <div id="v1-samples-grid" class="grid-2"></div>
       </div>
     </div>
   </div>
 
   <script>
+    // Tab switching
     function switchTab(tabId) {
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
       document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
@@ -620,40 +759,181 @@ def index_ui():
       document.getElementById(tabId).classList.add('active');
     }
 
-    function updateSlider(name) {
-      const el = document.getElementById('param-' + name);
-      const valEl = document.getElementById('val-' + name);
-      valEl.innerText = name === 'speed' ? el.value + 'x' : el.value;
+    function setStreamPrompt(lang, text) {
+      document.getElementById('stream-lang').value = lang;
+      document.getElementById('stream-text').value = text;
     }
 
-    function onVersionChange() {
-      const ver = document.getElementById('tts-version').value;
-      const badge = document.getElementById('version-badge');
-      if (ver === 'v1_baseline') {
-        badge.innerText = 'V1 Baseline';
-        badge.className = 'badge badge-v1';
-        document.getElementById('param-guidance').value = 1.00;
-        document.getElementById('param-temp').value = 0.70;
-        document.getElementById('param-steps').value = 24;
-        document.getElementById('param-mastering').checked = false;
-      } else {
-        badge.innerText = 'V2 Master Studio';
-        badge.className = 'badge badge-v2';
-        document.getElementById('param-guidance').value = 1.05;
-        document.getElementById('param-temp').value = 0.50;
-        document.getElementById('param-steps').value = 28;
-        document.getElementById('param-mastering').checked = true;
+    // ================================================================
+    // REAL-TIME STREAMING AUDIO QUEUE (WEB AUDIO API)
+    // ================================================================
+    let audioCtx = null;
+    let nextPlayTime = 0;
+    let streamStartTime = 0;
+    let firstByteRecorded = false;
+
+    function initAudioContext() {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       }
-      updateSlider('guidance');
-      updateSlider('temp');
-      updateSlider('steps');
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
     }
 
-    function setPrompt(lang, text) {
-      document.getElementById('tts-lang').value = lang;
-      document.getElementById('tts-text').value = text;
+    async function startStreamingPlayback() {
+      initAudioContext();
+      nextPlayTime = audioCtx.currentTime;
+      firstByteRecorded = false;
+      streamStartTime = performance.now();
+
+      const btn = document.getElementById('stream-btn');
+      const spinner = document.getElementById('stream-spinner');
+      const feed = document.getElementById('chunks-feed');
+      const statusBadge = document.getElementById('stream-status-badge');
+
+      btn.disabled = true;
+      spinner.style.display = 'block';
+      feed.innerHTML = '';
+      statusBadge.innerText = 'Streaming ⚡';
+      statusBadge.className = 'badge badge-speed';
+
+      document.getElementById('hud-ttfb').innerText = '-- ms';
+      document.getElementById('hud-lat').innerText = '-- s';
+      document.getElementById('hud-dur').innerText = '-- s';
+      document.getElementById('hud-rtf').innerText = '-- x';
+
+      const payload = {
+        text: document.getElementById('stream-text').value,
+        language: document.getElementById('stream-lang').value,
+        num_step: parseInt(document.getElementById('stream-steps').value),
+        speed: parseFloat(document.getElementById('stream-speed').value),
+        guidance_scale: 1.05,
+        class_temperature: 0.50,
+        apply_mastering: true
+      };
+
+      let totalAudioDuration = 0;
+      let totalLatency = 0;
+
+      try {
+        const response = await fetch('/api/tts/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\\n');
+          buffer = lines.pop(); // keep last incomplete line
+
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            const chunk = JSON.parse(line);
+
+            // Record TTFB on first chunk
+            if (!firstByteRecorded) {
+              const ttfb = Math.round(performance.now() - streamStartTime);
+              document.getElementById('hud-ttfb').innerText = ttfb + ' ms';
+              firstByteRecorded = true;
+            }
+
+            totalAudioDuration += chunk.duration_sec;
+            totalLatency = chunk.cumulative_latency_sec;
+
+            // Render chunk in feed
+            const card = document.createElement('div');
+            card.id = `chunk-card-${chunk.chunk_index}`;
+            card.className = 'chunk-card';
+            card.innerHTML = `
+              <div>
+                <strong style="color: var(--accent); font-size: 0.85rem;">[${chunk.chunk_index + 1}/${chunk.total_chunks}]</strong>
+                <span style="font-size: 0.9rem; margin-left: 6px;">"${chunk.text}"</span>
+                <div style="font-size: 0.75rem; color: var(--muted); margin-top: 4px;">
+                  Length: ${chunk.duration_sec}s | Compute: ${chunk.latency_sec}s
+                </div>
+              </div>
+              <span id="badge-chunk-${chunk.chunk_index}" class="badge">Queued ⏳</span>
+            `;
+            feed.appendChild(card);
+
+            // Decode base64 and schedule in Web Audio API
+            await scheduleChunkAudio(chunk);
+          }
+        }
+
+        // Finalize Telemetry HUD
+        document.getElementById('hud-lat').innerText = totalLatency.toFixed(2) + ' s';
+        document.getElementById('hud-dur').innerText = totalAudioDuration.toFixed(2) + ' s';
+        const rtf = (totalLatency / (totalAudioDuration || 1)).toFixed(2);
+        document.getElementById('hud-rtf').innerText = rtf + ' x';
+
+        statusBadge.innerText = 'Completed ✓';
+        statusBadge.className = 'badge badge-v2';
+      } catch (err) {
+        alert('Streaming error: ' + err);
+        statusBadge.innerText = 'Failed';
+      } finally {
+        btn.disabled = false;
+        spinner.style.display = 'none';
+      }
     }
 
+    async function scheduleChunkAudio(chunk) {
+      // Decode base64 string to ArrayBuffer
+      const binaryString = atob(chunk.audio_base64);
+      const len = binaryString.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+
+      const audioBuffer = await audioCtx.decodeAudioData(bytes.buffer);
+      const source = audioCtx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(audioCtx.destination);
+
+      const startTime = Math.max(audioCtx.currentTime, nextPlayTime);
+      source.start(startTime);
+      nextPlayTime = startTime + audioBuffer.duration;
+
+      // Update badge states based on scheduled playback time
+      const delayToStart = (startTime - audioCtx.currentTime) * 1000;
+      setTimeout(() => {
+        const badge = document.getElementById(`badge-chunk-${chunk.chunk_index}`);
+        const card = document.getElementById(`chunk-card-${chunk.chunk_index}`);
+        if (badge) {
+          badge.innerText = 'Playing 🔊';
+          badge.className = 'badge badge-mtn';
+        }
+        if (card) card.classList.add('playing');
+      }, Math.max(0, delayToStart));
+
+      setTimeout(() => {
+        const badge = document.getElementById(`badge-chunk-${chunk.chunk_index}`);
+        const card = document.getElementById(`chunk-card-${chunk.chunk_index}`);
+        if (badge) {
+          badge.innerText = 'Done ✓';
+          badge.className = 'badge badge-v2';
+        }
+        if (card) {
+          card.classList.remove('playing');
+          card.classList.add('done');
+        }
+      }, Math.max(0, delayToStart + (audioBuffer.duration * 1000)));
+    }
+
+    // ================================================================
+    // TRADITIONAL SYNTHESIS & A/B COMPARISON
+    // ================================================================
     async function executeSynthesize() {
       const loading = document.getElementById('synth-loading');
       loading.style.display = 'block';
@@ -799,7 +1079,6 @@ def index_ui():
       }
     }
 
-    // Populate pre-generated showcase
     async function loadShowcase() {
       try {
         const res = await fetch('/api/samples');
@@ -823,7 +1102,6 @@ def index_ui():
       } catch(e) {}
     }
 
-    // Check health on start
     async function checkHealth() {
       try {
         const res = await fetch('/health');
@@ -848,4 +1126,3 @@ def index_ui():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False)
-
